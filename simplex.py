@@ -86,8 +86,8 @@ class PLProblem():
                 if b == None:
                         return np.inf
 
-                bb = [self.b[i] for i in range(self.b.size) if i in b]
-                Ab = [self.A[i] for i in range(self.b.size) if i in b]
+                bb = [self.b[i] for i in b]
+                Ab = [self.A[i] for i in b]
                 
                 Abi = np.linalg.inv(Ab)
                 
@@ -122,9 +122,9 @@ class PLProblem():
                 return (Paux, b)
                 
 
-        def simplexPass(self,b):
-                bb = [self.b[i] for i in range(self.b.size) if i in b]
-                Ab = [self.A[i] for i in range(self.b.size) if i in b]
+        def primalSimplexPass(self,b):
+                bb = [self.b[i] for i in b]
+                Ab = [self.A[i] for i in b]
                 Abi = np.linalg.inv(Ab)
                 signedX = np.dot(Abi, bb)
 
@@ -132,12 +132,12 @@ class PLProblem():
                 for i in range(len(b)):
                         signedY[b[i]] = np.dot(self.c, Abi[:,i])
 
-                h = np.where(signedY < abs(signedY))[0]
+                h = np.where(signedY < abs(signedY) - ABSOLUTETOLERANCE)[0]
                 if h.size == 0:
                         return (self.objF.apply([i if i >= 0 + ABSOLUTETOLERANCE else 0 for i in signedX]), signedX, b)
                 h = h[0]
                 h = next(i for i in range(len(b)) if h == b[i])
-                etha = np.inf
+                tetha = np.inf
                 k = 0
 
                 W = -1*Abi
@@ -145,18 +145,18 @@ class PLProblem():
                 for i in (x for x in range(self.b.size) if x not in b and np.dot(self.A[x], Wh) > 0+ABSOLUTETOLERANCE):
                         Ax = np.dot(self.A[i], signedX)
                         AWh = np.dot(self.A[i], Wh)
-                        letha = (self.b[i] - Ax)/AWh
-                        if letha <= etha + ABSOLUTETOLERANCE + RELATIVETOLERANCE*max(etha,letha):
-                                etha = letha
+                        ltetha = (self.b[i] - Ax)/AWh
+                        if ltetha < tetha:
+                                tetha = ltetha
                                 k = i
-                if etha == np.inf:
+                if tetha == np.inf:
                         return np.inf
                 
                 b[h] = k
                 return sorted(b)
 
 
-        def simplex(self):
+        def primalSimplex(self):
                 Pauxb = self.auxP()
                 if Pauxb == np.inf:
                         return None
@@ -166,16 +166,139 @@ class PLProblem():
                         b = sorted(b)
                 Paux = Pauxb[0]
                 while type(b) == list:
-                        b = Paux.simplexPass(b)
+                        b = Paux.primalSimplexPass(b)
                 if b[0] > 0:
                         return None
                 b = b[2]
                 b = [i for i in b if i < self.b.size]
                 b = sorted(b)
                 while type(b) == list:
-                        b = self.simplexPass(b)
+                        b = self.primalSimplexPass(b)
                 return b
 
+        
+        def calcDual(self):
+                self.dual = self.Dual(self.b, self.c, self.A)
+        
+        class Dual():
+                def __init__(self,b,c,A):
+                        self.b = b
+                        self.c = c
+                        self.A = A
+                        self.objF = objFunction(b, True)
+                        conList = list()
+                        for i in range(c.size):
+                                conList.append(constraint(A[:,i], c[i], constrainType.Equals))
+                        for i in range(self.b.size):
+                                coef = [0]*self.b.size
+                                coef[i] = 1
+                                conList.append(constraint(coef, 0, constrainType.GreaterThan))
+                        self.conList = conList
+                
+                def __str__(self):
+                        s = ""
+                        s += str(self.objF)
+                        s += "\n"
+                        for i in self.conList:
+                                s+=str(i)+"\n"
+                        return s
+
+
+                def auxD(self):                     
+                        variables = np.hstack((np.zeros(shape=(self.b.size)),np.ones(shape=(self.c.size))))
+                        for i in range(self.c.size):
+                                if self.c[i] < 0:
+                                        self.c[i] *= -1
+                                        self.A[:,i] *= -1
+                        aI = np.identity(self.c.size)
+                        auxA = np.vstack((self.A,aI))
+                        
+                        Daux = PLProblem.Dual(variables, self.c, auxA)
+
+                        base = [i + self.b.size for i in range(self.c.size)]
+                        return (Daux, base)
+
+
+                def dualSimplexPass(self,b):            #TOFIX something is broken with the tetha calculus
+                        bb = [self.b[i] for i in b]
+                        Ab = [self.A[i] for i in b]
+                        Abi = np.linalg.inv(Ab)
+                        signedX = np.dot(Abi,bb)
+                        signedY = np.zeros(self.b.size)
+                        for i in range(len(b)):
+                                signedY[b[i]] = np.dot(self.c, Abi[:,i])
+                        
+                        biAx = self.b - np.dot(self.A,signedX)
+                        k = np.where(biAx < abs(biAx) - ABSOLUTETOLERANCE)[0]
+                        k = [x for x in k if x not in b]
+                        
+                        if len(k) == 0:
+                                return (-1*self.objF.apply(signedY), signedY, b)
+                        
+                        k = k[0]
+
+                        W = -1 * Abi
+                        tetha = np.inf
+                        h = None
+                        for i in (x for x in range(len(b)) if np.dot(self.A[k], W[:,x]) < 0 - ABSOLUTETOLERANCE):
+                                yi = signedY[b[i]]
+                                akwi = -1*np.dot(self.A[k], W[:,i])
+                                ltetha = yi / ( akwi)
+                                if ltetha < tetha:
+                                        h = i
+                                        tetha = ltetha
+                        
+                        if h is None:
+                                return np.inf
+                        b[h] = k
+                        return sorted(b)
+
+
+
+
+                def dualSimplex(self):                 
+                        aux = self.auxD()
+                        baux = aux[1]
+                        daux = aux[0]
+                        if type(baux) == list:
+                                baux = sorted(baux)
+                        while type(baux) == list:
+                                baux = daux.dualSimplexPass(baux)
+                        
+                        if baux == np.inf or baux[0] >= 0+ABSOLUTETOLERANCE:
+                                return None
+                        
+                        baux= baux[2]
+                        A2 = [daux.A[i] for i in range(daux.b.size) if i not in baux]
+                        ME = [daux.A[i] for i in baux if i >= self.b.size]
+                        ME = np.transpose(ME)
+                        while len(ME) != 0:
+                                h = None
+                                k = None
+                                for i in len(A2):
+                                        for j in len(ME):
+                                                if np.dot(A2[i], ME[j]):
+                                                        k = i
+                                                        h = j
+                                                        break
+                                        if h is not None:
+                                                break
+                                bh = baux.index(h)
+                                baux[bh] = h
+                        b = sorted(baux)
+                        while type(b) == list:
+                                b = self.dualSimplexPass(b)
+                        return b
+                        
+        def dualSimplex(self):
+                self.calcDual()
+                sol = self.dual.dualSimplex()
+                if sol == None :
+                        return np.inf
+                if sol == np.inf:
+                        return None
+                return sol
+        
 
         
         def __str__(self):
@@ -185,8 +308,6 @@ class PLProblem():
                 for i in self.conList:
                         s+=str(i)+"\n"
                 return s
-        
-                
 
 
 
@@ -195,14 +316,22 @@ class PLProblem():
 
 if __name__ == "__main__":
         PL1 = PLProblem([1,1,1], False, [[1,-1,1], [2,1,-2], [1,1,2], [4,1,1]], [1,1,4,6], [constrainType.LessThan]*4)
-        print(PL1.simplex())
         PL2 = PLProblem([-5,-4,-8,-9,-15], True, [[1,1,2,1,2],[1,-2,-1,2,3],[1,0,0,0,0],[0,1,0,0,0],[0,0,1,0,0],[0,0,0,1,0],[0,0,0,0,1]], [11,6,0,0,0,0,0], [constrainType.Equals,constrainType.Equals,constrainType.GreaterThan,constrainType.GreaterThan,constrainType.GreaterThan,constrainType.GreaterThan,constrainType.GreaterThan])
-        print(PL2.simplex())
         PL3 = PLProblem([1,1], False, [[2,-2],[2,-3],[1,2],[2,1]],[1,1,2,2], [constrainType.LessThan]*4)
-        print(PL3.simplex())
         PL4 = PLProblem([6,5], False, [[1,2],[1,2],[1,0],[0,1]], [8,6,0,0], [constrainType.LessThan,constrainType.LessThan,constrainType.GreaterThan,constrainType.GreaterThan])
-        print(PL4.simplex())
         PL5 = PLProblem([1,1], False, [[-1,1],[1,-6],[2,1]], [1,1,15],[constrainType.LessThan]*3)
-        print(PL5.simplex())
-        
+        PL6 = PLProblem([3,-4], False, [[-1,0],[0,-1],[1,2],[1,1],[1,0]], [0,0,13,9,7], [constrainType.LessThan]*5)
+        print(PL1.primalSimplex())
+        print(PL2.primalSimplex())
+        print(PL3.primalSimplex())
+        print(PL4.primalSimplex())
+        print(PL5.primalSimplex())
+        print(PL6.primalSimplex())
+        print("dual")
+        print(PL1.dualSimplex())
+        print(PL2.dualSimplex())
+        print(PL3.dualSimplex())
+        print(PL4.dualSimplex())
+        print(PL5.dualSimplex())
+        print(PL6.dualSimplex())
         
